@@ -23,9 +23,7 @@ const { generateScssFromCss } = require("./scssGenerator");
  * @returns {Object} 配置对象
  */
 function getConfig() {
-  const config = vscode.workspace.getConfiguration(
-    "devAssistKit.iconProcessor"
-  );
+  const config = vscode.workspace.getConfiguration("devCooker.iconProcessor");
 
   // 获取配置值
   let fontFilesPath = config.get("fontFilesPath", "./src/assets/fonts/");

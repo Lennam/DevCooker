@@ -40,13 +40,13 @@ function activate(context) {
   // 初始化国际化工具
   i18nTools.initialize(context);
 
-  console.log("DevAssistKit 已激活");
+  console.log("DevCooker 已激活");
 }
 
 function deactivate() {
   // 清理国际化工具资源
   i18nTools.dispose();
-  console.log("DevAssistKit 已停用");
+  console.log("DevCooker 已停用");
 }
 
 module.exports = {

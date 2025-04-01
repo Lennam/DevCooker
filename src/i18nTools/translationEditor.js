@@ -16,7 +16,7 @@ async function createTranslationEditor(
   localeFiles
 ) {
   // 获取配置
-  const config = vscode.workspace.getConfiguration("devAssistKit");
+  const config = vscode.workspace.getConfiguration("devCooker");
   const defaultLocale = config.get("i18n.defaultLocale", "zh-CN");
 
   // 创建Webview面板

@@ -1,6 +1,6 @@
 {
-  "name": "devassistkit",
-  "displayName": "DevAssistKit",
+  "name": "devCooker",
+  "displayName": "DevCooker",
   "description": "一款集成多种开发辅助功能的 VS Code 扩展，提升开发效率与工作流程",
   "license": "MIT",
   "author": {
@@ -27,35 +27,35 @@
     "commands": [
       {
         "command": "devassistkit.iconProcessor",
-        "title": "DevAssistKit: 处理 Icomoon 资源"
+        "title": "DevCooker: 处理 Icomoon 资源"
       },
       {
         "command": "devassistkit.i18nTools.configureLocales",
-        "title": "DevAssistKit: 配置国际化目录"
+        "title": "DevCooker: 配置国际化目录"
       },
       {
         "command": "devassistkit.i18nTools.refreshLocales",
-        "title": "DevAssistKit: 刷新国际化数据"
+        "title": "DevCooker: 刷新国际化数据"
       },
       {
         "command": "devassistkit.i18nTools.editTranslation",
-        "title": "DevAssistKit: 编辑翻译"
+        "title": "DevCooker: 编辑翻译"
       }
     ],
     "configuration": {
-      "title": "DevAssistKit",
+      "title": "DevCooker",
       "properties": {
-        "devAssistKit.iconProcessor.fontFilesPath": {
+        "devCooker.iconProcessor.fontFilesPath": {
           "type": "string",
           "default": "./src/assets/fonts/",
           "description": "字体文件保存路径"
         },
-        "devAssistKit.iconProcessor.stylesPath": {
+        "devCooker.iconProcessor.stylesPath": {
           "type": "string",
           "default": "./src/styles/icons/dc-icon-basic.scss",
           "description": "图标样式文件的具体保存路径"
         },
-        "devAssistKit.i18n.localesPaths": {
+        "devCooker.i18n.localesPaths": {
           "type": "array",
           "default": [
             "./src/locales/",
@@ -63,12 +63,12 @@
           ],
           "description": "多语言文件目录，插件会自动扫描这些目录寻找多语言文件"
         },
-        "devAssistKit.i18n.defaultLocale": {
+        "devCooker.i18n.defaultLocale": {
           "type": "string",
           "default": "zh-CN",
           "description": "默认语言"
         },
-        "devAssistKit.i18n.fileExtensions": {
+        "devCooker.i18n.fileExtensions": {
           "type": "array",
           "default": [
             ".json",
@@ -77,7 +77,7 @@
           ],
           "description": "多语言文件扩展名"
         },
-        "devAssistKit.i18n.translationMethods": {
+        "devCooker.i18n.translationMethods": {
           "type": "array",
           "default": [
             "$t",

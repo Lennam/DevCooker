@@ -3,6 +3,26 @@ const acorn = require("acorn");
 const walk = require("acorn-walk");
 const _ = require("lodash");
 
+// 添加翻译缓存，避免重复查询相同的键
+const translationCache = new Map();
+// 控制是否输出调试日志
+const DEBUG = false;
+
+// 用于日志输出的辅助函数
+function logDebug(...args) {
+  if (DEBUG) {
+    console.log(...args);
+  }
+}
+
+function logWarn(...args) {
+  console.warn(...args);
+}
+
+function logError(...args) {
+  console.error(...args);
+}
+
 /**
  * 装饰编辑器中的多语言键
  * @param {vscode.TextEditor} editor 文本编辑器
@@ -14,11 +34,12 @@ function decorateI18nKeys(editor, decorator, localeData) {
     return;
   }
 
+  const startTime = Date.now();
   const text = editor.document.getText();
   const decorations = [];
 
   // 获取配置
-  const config = vscode.workspace.getConfiguration("devAssistKit");
+  const config = vscode.workspace.getConfiguration("devCooker");
   const defaultLocale = config.get("i18n.defaultLocale", "zh-CN");
   const translationMethods = config.get("i18n.translationMethods", [
     "$t",
@@ -30,6 +51,12 @@ function decorateI18nKeys(editor, decorator, localeData) {
 
   // 根据文件类型选择解析方法
   const fileType = editor.document.languageId;
+
+  // 每次装饰前清理缓存，避免缓存过大
+  // 只在不同文件间保留缓存，同一文件的更新会刷新缓存
+  if (translationCache.size > 1000) {
+    translationCache.clear();
+  }
 
   if (fileType === "vue") {
     decorations.push(
@@ -55,6 +82,8 @@ function decorateI18nKeys(editor, decorator, localeData) {
 
   // 应用装饰器
   editor.setDecorations(decorator, decorations);
+  
+  logDebug(`装饰完成，共处理 ${decorations.length} 个翻译键，耗时 ${Date.now() - startTime}ms`);
 }
 
 /**
@@ -74,10 +103,11 @@ function findVueTranslations(
   defaultLocale
 ) {
   const decorations = [];
-
-  // 模板中的翻译: {{ $t('key') }}
+  
+  // 优化正则表达式，一次性捕获所有可能的多语言方法调用
+  const methodPattern = translationMethods.join("|");
   const templatePattern = new RegExp(
-    `(${translationMethods.join("|")})\\s*\\(\\s*['"]([^'"]+)['"]`,
+    `(${methodPattern})\\s*\\(\\s*['"]([^'"]+)['"]`,
     "g"
   );
   let match;
@@ -100,20 +130,10 @@ function findVueTranslations(
     const endPos = editor.document.positionAt(match.index + fullMatch.length);
     const range = new vscode.Range(matchPos, endPos);
 
-    // 获取翻译值
-    const translations = getTranslationsForKey(key, localeData);
-    const translation = translations[defaultLocale] || key;
-
-    // 创建装饰选项
+    // 创建仅用于悬停功能的装饰器（不包含行内显示）
     const decoration = {
       range,
-      renderOptions: {
-        after: {
-          contentText: `// ${_.truncate(translation, { length: 50 })}`,
-          color: "gray",
-        },
-      },
-      hoverMessage: createTranslationHover(key, translations, defaultLocale),
+      // 不需要获取翻译值，提高性能
     };
 
     decorations.push(decoration);
@@ -121,10 +141,10 @@ function findVueTranslations(
 
   // 解析脚本部分的翻译
   try {
-    // 提取脚本部分
-    const scriptMatch = text.match(/<script(\s+[^>]*)?>([\s\S]*?)<\/script>/i);
-    if (scriptMatch && scriptMatch[2]) {
-      const scriptContent = scriptMatch[2];
+    // 提取脚本部分 - 使用更高效的正则表达式
+    const scriptMatch = text.match(/<script(?:\s+[^>]*)?>([\s\S]*?)<\/script>/i);
+    if (scriptMatch && scriptMatch[1]) {
+      const scriptContent = scriptMatch[1];
       const scriptOffset =
         scriptMatch.index + scriptMatch[0].indexOf(scriptContent);
 
@@ -141,7 +161,7 @@ function findVueTranslations(
       decorations.push(...jsDecorations);
     }
   } catch (error) {
-    console.error("解析Vue脚本出错:", error);
+    logError("解析Vue脚本出错:", error);
   }
 
   return decorations;
@@ -194,12 +214,18 @@ function parseJsContent(
   const decorations = [];
 
   try {
-    // 解析JS代码
+    // 解析JS代码 - 优化解析选项
     const ast = acorn.parse(content, {
       ecmaVersion: "latest",
       sourceType: "module",
       locations: true,
+      // 添加容错能力
+      allowReturnOutsideFunction: true,
+      allowImportExportEverywhere: true,
     });
+
+    // 创建方法名映射集，提高查找性能
+    const translationMethodsSet = new Set(translationMethods);
 
     // 遍历AST查找翻译方法调用
     walk.simple(ast, {
@@ -221,14 +247,7 @@ function parseJsContent(
               node.callee.object.property.type === "Identifier" &&
               node.callee.object.property.name === "global"
             ) {
-              methodName = `${node.callee.object.property.name}.${methodName}`;
-
-              if (
-                node.callee.object.object.type === "Identifier" &&
-                node.callee.object.object.name === "i18n"
-              ) {
-                methodName = `i18n.${methodName}`;
-              }
+              methodName = `i18n.global.${methodName}`;
             } else if (
               node.callee.object.type === "Identifier" &&
               node.callee.object.name === "i18n"
@@ -240,7 +259,7 @@ function parseJsContent(
 
         // 检查是否是翻译方法
         if (
-          translationMethods.includes(methodName) &&
+          translationMethodsSet.has(methodName) &&
           node.arguments.length > 0
         ) {
           const firstArg = node.arguments[0];
@@ -259,24 +278,10 @@ function parseJsContent(
             const endPos = editor.document.positionAt(firstArg.end + offset);
             const range = new vscode.Range(startPos, endPos);
 
-            // 获取翻译值
-            const translations = getTranslationsForKey(key, localeData);
-            const translation = translations[defaultLocale] || key;
-
-            // 创建装饰选项
+            // 创建仅用于悬停功能的装饰器（不包含行内显示）
             const decoration = {
               range,
-              renderOptions: {
-                after: {
-                  contentText: `// ${_.truncate(translation, { length: 50 })}`,
-                  color: "gray",
-                },
-              },
-              hoverMessage: createTranslationHover(
-                key,
-                translations,
-                defaultLocale
-              ),
+              // 不需要获取翻译值，提高性能
             };
 
             decorations.push(decoration);
@@ -285,7 +290,7 @@ function parseJsContent(
       },
     });
   } catch (error) {
-    console.error("解析JS代码出错:", error);
+    logError("解析JS代码出错:", error);
   }
 
   return decorations;
@@ -339,22 +344,94 @@ function isInStringLiteral(text, position, key) {
  * @returns {Object} 翻译映射
  */
 function getTranslationsForKey(key, localeData) {
+  // 检查缓存中是否已有结果
+  const cacheKey = key;
+  if (translationCache.has(cacheKey)) {
+    return translationCache.get(cacheKey);
+  }
+
+  // 创建结果对象
   const result = {};
 
-  // 拆分键以查找命名空间
-  const parts = key.split(".");
-  const namespace = parts[0];
-  const fullKey = key;
+  // 调试日志
+  logDebug(`尝试获取翻译键: ${key}`);
 
+  // 检查键是否为空
+  if (!key) {
+    logWarn("翻译键为空");
+    translationCache.set(cacheKey, result);
+    return result;
+  }
+
+  // 简单的键分割，用于嵌套对象导航
+  const parts = key.split(".");
+
+  // 遍历所有语言
   for (const locale in localeData) {
-    if (
-      localeData[locale][namespace] &&
-      localeData[locale][namespace][fullKey]
-    ) {
-      result[locale] = localeData[locale][namespace][fullKey];
+    // 跳过不存在的语言
+    if (!localeData[locale]) continue;
+
+    // 遍历该语言的所有命名空间
+    let found = false;
+    for (const namespace in localeData[locale]) {
+      if (found) break; // 如果已经找到翻译，不再继续查找
+
+      // 尝试方法 1: 直接在当前命名空间找到完整键
+      if (localeData[locale][namespace][key] !== undefined) {
+        result[locale] = localeData[locale][namespace][key];
+        logDebug(`在 ${locale}.${namespace} 中找到完整键: ${key}`);
+        found = true;
+        continue;
+      }
+
+      // 尝试方法 2: 深度导航嵌套对象
+      try {
+        let current = localeData[locale][namespace];
+        let validPath = true;
+
+        // 深度优先遍历对象树
+        for (const part of parts) {
+          if (!current || typeof current !== "object" || !(part in current)) {
+            validPath = false;
+            break;
+          }
+          current = current[part];
+        }
+
+        // 找到了非对象的叶子节点值
+        if (validPath && current !== undefined && typeof current !== "object") {
+          result[locale] = current;
+          logDebug(
+            `在 ${locale}.${namespace} 中通过嵌套路径找到键: ${key} = ${current}`
+          );
+          found = true;
+          continue;
+        }
+      } catch (error) {
+        logError(`嵌套导航出错: ${locale}.${namespace}.${key}`, error);
+      }
+
+      // 尝试方法 3: 查找最后一个部分作为简单键
+      if (parts.length > 1) {
+        const lastPart = parts[parts.length - 1];
+        if (localeData[locale][namespace][lastPart] !== undefined) {
+          result[locale] = localeData[locale][namespace][lastPart];
+          logDebug(`在 ${locale}.${namespace} 中找到简单键: ${lastPart}`);
+          found = true;
+        }
+      }
     }
   }
 
+  // 调试日志
+  if (Object.keys(result).length === 0) {
+    logWarn(`未找到翻译键: ${key} 的翻译`);
+  } else {
+    logDebug(`翻译键 ${key} 的最终结果:`, result);
+  }
+
+  // 缓存结果
+  translationCache.set(cacheKey, result);
   return result;
 }
 
@@ -378,7 +455,16 @@ function createTranslationHover(key, translations, defaultLocale) {
   } else {
     hoverContent.appendMarkdown(`**翻译:**\n\n`);
 
-    for (const locale in translations) {
+    // 优先显示默认语言和英文
+    const orderedLocales = Object.keys(translations).sort((a, b) => {
+      if (a === defaultLocale) return -1;
+      if (b === defaultLocale) return 1;
+      if (a === "en" || a === "en-US") return -1;
+      if (b === "en" || b === "en-US") return 1;
+      return a.localeCompare(b);
+    });
+
+    for (const locale of orderedLocales) {
       const value = translations[locale];
       const isDefaultLocale = locale === defaultLocale ? " (默认)" : "";
       hoverContent.appendMarkdown(
@@ -405,7 +491,7 @@ function createTranslationHover(key, translations, defaultLocale) {
  */
 function getTranslationHoverProvider(localeData) {
   // 获取配置
-  const config = vscode.workspace.getConfiguration("devAssistKit");
+  const config = vscode.workspace.getConfiguration("devCooker");
   const defaultLocale = config.get("i18n.defaultLocale", "zh-CN");
   const translationMethods = config.get("i18n.translationMethods", [
     "$t",
@@ -415,12 +501,15 @@ function getTranslationHoverProvider(localeData) {
     "translate",
   ]);
 
+  // 编译一次正则表达式，提高性能
+  const methodPattern = translationMethods.join("|");
+  const regex = new RegExp(
+    `(${methodPattern})\\s*\\(\\s*['"]([^'"]+)['"]`,
+    "g"
+  );
+
   return {
     provideHover(document, position, token) {
-      // 根据文件类型选择解析方法
-      const fileType = document.languageId;
-      const text = document.getText();
-
       // 读取当前位置的单词
       const wordRange = document.getWordRangeAtPosition(position);
       if (!wordRange) {
@@ -430,13 +519,11 @@ function getTranslationHoverProvider(localeData) {
       const lineText = document.lineAt(position.line).text;
       const line = position.line;
 
+      // 重置正则表达式的lastIndex
+      regex.lastIndex = 0;
+      
       // 查找这一行中的翻译调用
-      const regex = new RegExp(
-        `(${translationMethods.join("|")})\\s*\\(\\s*['"]([^'"]+)['"]`,
-        "g"
-      );
       let match;
-
       while ((match = regex.exec(lineText)) !== null) {
         const [fullMatch, method, key] = match;
         const startCharacter = match.index;
@@ -466,4 +553,5 @@ function getTranslationHoverProvider(localeData) {
 module.exports = {
   decorateI18nKeys,
   getTranslationHoverProvider,
+  clearTranslationCache: () => translationCache.clear(),
 };
