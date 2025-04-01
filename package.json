@@ -1,0 +1,115 @@
+{
+  "name": "devassistkit",
+  "displayName": "DevAssistKit",
+  "description": "一款集成多种开发辅助功能的 VS Code 扩展，提升开发效率与工作流程",
+  "license": "MIT",
+  "author": {
+    "name": "Nam",
+    "email": "leenamy116@gmail.com"
+  },
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other",
+    "Formatters",
+    "Snippets"
+  ],
+  "main": "./src/extension.js",
+  "activationEvents": [
+    "onCommand:devassistkit.iconProcessor",
+    "onLanguage:vue",
+    "onLanguage:javascript",
+    "onLanguage:typescript"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "devassistkit.iconProcessor",
+        "title": "DevAssistKit: 处理 Icomoon 资源"
+      },
+      {
+        "command": "devassistkit.i18nTools.configureLocales",
+        "title": "DevAssistKit: 配置国际化目录"
+      },
+      {
+        "command": "devassistkit.i18nTools.refreshLocales",
+        "title": "DevAssistKit: 刷新国际化数据"
+      },
+      {
+        "command": "devassistkit.i18nTools.editTranslation",
+        "title": "DevAssistKit: 编辑翻译"
+      }
+    ],
+    "configuration": {
+      "title": "DevAssistKit",
+      "properties": {
+        "devAssistKit.iconProcessor.fontFilesPath": {
+          "type": "string",
+          "default": "./src/assets/fonts/",
+          "description": "字体文件保存路径"
+        },
+        "devAssistKit.iconProcessor.stylesPath": {
+          "type": "string",
+          "default": "./src/styles/icons/dc-icon-basic.scss",
+          "description": "图标样式文件的具体保存路径"
+        },
+        "devAssistKit.i18n.localesPaths": {
+          "type": "array",
+          "default": [
+            "./src/locales/",
+            "./src/i18n/"
+          ],
+          "description": "多语言文件目录，插件会自动扫描这些目录寻找多语言文件"
+        },
+        "devAssistKit.i18n.defaultLocale": {
+          "type": "string",
+          "default": "zh-CN",
+          "description": "默认语言"
+        },
+        "devAssistKit.i18n.fileExtensions": {
+          "type": "array",
+          "default": [
+            ".json",
+            ".js",
+            ".ts"
+          ],
+          "description": "多语言文件扩展名"
+        },
+        "devAssistKit.i18n.translationMethods": {
+          "type": "array",
+          "default": [
+            "$t",
+            "$st",
+            "i18n.global.t",
+            "i18n.t",
+            "t",
+            "translate"
+          ],
+          "description": "翻译方法名称列表"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "pretest": "yarn run lint",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "20.x",
+    "@types/vscode": "^1.95.0",
+    "@vscode/test-cli": "^0.0.10",
+    "@vscode/test-electron": "^2.4.1",
+    "eslint": "^9.21.0"
+  },
+  "dependencies": {
+    "acorn": "^8.14.1",
+    "acorn-walk": "^8.3.4",
+    "axios": "^1.8.1",
+    "glob": "^10.4.5",
+    "lodash": "^4.17.21"
+  }
+}
