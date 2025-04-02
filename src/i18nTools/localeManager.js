@@ -1,7 +1,7 @@
 const vscode = require("vscode");
 const path = require("path");
 const fs = require("fs").promises;
-const { glob, Glob } = require("glob");
+const fg = require("fast-glob");
 
 /**
  * 查找多语言文件
@@ -10,50 +10,61 @@ const { glob, Glob } = require("glob");
  * @returns {Promise<Object>} 多语言文件信息
  */
 async function findLocaleFiles(localesPaths, fileExtensions) {
-  const workspaceRoot = vscode.workspace.workspaceFolders[0]?.uri.fsPath;
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!workspaceRoot) {
     throw new Error("请先打开一个项目文件夹");
   }
 
-  // 构建文件查找模式
+  // 构建文件查找模式 - 优化查找模式，减少重复查询
   const patterns = [];
   for (const localePath of localesPaths) {
-    // 标准化路径分隔符，确保在Windows上也能正确工作
-    const normalizedPath = localePath.replace(/\\/g, "/");
-    for (const ext of fileExtensions) {
-      // 添加对直接位于locales根目录下的文件的支持
-      patterns.push(path.join(normalizedPath, `*${ext}`));
-      patterns.push(path.join(normalizedPath, `*/*${ext}`)); // 添加对子目录的支持
+    try {
+      // 标准化路径分隔符，确保在Windows上也能正确工作
+      const normalizedPath = localePath.replace(/\\/g, "/");
+
+      // 判断路径是否为绝对路径
+      const isAbsolutePath = path.isAbsolute(normalizedPath);
+
+      // 如果是相对路径，则相对于工作区；如果是绝对路径，则直接使用
+      const basePath = isAbsolutePath
+        ? normalizedPath
+        : path.join(workspaceRoot, normalizedPath).replace(/\\/g, "/");
+
+      // 检查目录是否存在
+      try {
+        await fs.access(basePath);
+      } catch (e) {
+        continue; // 目录不存在，跳过
+      }
+
+      // 优化：只添加一个递归模式，减少查询次数
+      for (const ext of fileExtensions) {
+        const normalizedExt = ext.startsWith(".") ? ext : `.${ext}`;
+        // 使用 **/* 模式一次性匹配所有子目录
+        const pattern = path
+          .join(basePath, `**/*${normalizedExt}`)
+          .replace(/\\/g, "/");
+        patterns.push(pattern);
+      }
+    } catch (error) {
+      console.error(`处理路径时出错: "${localePath}"`);
     }
   }
 
-  // 查找匹配的文件
-  const allFiles = [];
-  for (const pattern of patterns) {
-    try {
-      // 确保Windows路径格式也能正确工作
-      const fullPattern = path.join(workspaceRoot, pattern).replace(/\\/g, "/");
-      console.log("查找模式:", fullPattern);
+  // 优化：一次性执行glob查询所有模式
+  const globOptions = {
+    nodir: true,
+    ignore: ["**/node_modules/**", "**/index.*"],
+    windowsPathsNoEscape: true,
+    absolute: true,
+    follow: true,
+  };
 
-      // 移除可能导致问题的重复代码
-      /* 
-      const g = new Glob(fullPattern, {});
-      for await (const file of g) {
-        console.log("found a foo file:", file);
-      }
-      */
-
-      // 使用glob查找文件，添加Windows路径兼容选项
-      const files = await glob(fullPattern, {
-        nodir: true,
-        ignore: ["node_modules/**", "**/index.*"], // 排除node_modules和index文件
-        windowsPathsNoEscape: true, // 添加Windows路径兼容选项
-      });
-      console.log("匹配的文件:", files);
-      allFiles.push(...files);
-    } catch (error) {
-      console.error(`查找文件失败: ${pattern}`, error);
-    }
+  let allFiles = [];
+  try {
+    allFiles = await fg(patterns, globOptions);
+  } catch (error) {
+    console.error("文件查找失败");
   }
 
   // 过滤掉文件名为index的文件
@@ -65,27 +76,49 @@ async function findLocaleFiles(localesPaths, fileExtensions) {
   // 分析文件路径提取语言和命名空间
   const localeFiles = {};
   for (const filePath of filteredFiles) {
-    // 提取相对路径
-    const relativePath = path.relative(workspaceRoot, filePath);
+    try {
+      // 检查文件是否存在且可访问
+      try {
+        await fs.access(filePath);
+      } catch (e) {
+        continue; // 文件不存在或无法访问，跳过
+      }
 
-    // 尝试确定语言标识符
-    const locale = determineLocale(filePath);
+      // 提取相对路径
+      const relativePath = path.relative(workspaceRoot, filePath);
+      console.log(`\n处理文件: "${relativePath}" (${filePath})`);
 
-    // 提取命名空间（如果存在）
-    const namespace = determineNamespace(filePath);
+      // 尝试确定语言标识符
+      const locale = determineLocale(filePath);
+      console.log(`  语言识别结果: "${locale}"`);
 
-    if (!localeFiles[locale]) {
-      localeFiles[locale] = {};
+      // 提取命名空间（如果存在）
+      const namespace = determineNamespace(filePath);
+      console.log(`  命名空间识别结果: "${namespace}"`);
+
+      // 显示文件基本信息
+      try {
+        const stat = await fs.stat(filePath);
+        console.log(`  文件信息:`, {
+          大小: `${stat.size} 字节`,
+          修改时间: new Date(stat.mtime).toISOString(),
+          创建时间: new Date(stat.ctime).toISOString(),
+        });
+      } catch (e) {
+        console.warn(`  无法获取文件信息:`, e);
+      }
+
+      // 添加到结果对象
+      if (!localeFiles[locale]) {
+        localeFiles[locale] = {};
+      }
+      if (!localeFiles[locale][namespace]) {
+        localeFiles[locale][namespace] = [];
+      }
+      localeFiles[locale][namespace].push(filePath);
+    } catch (error) {
+      console.error(`处理文件失败: "${filePath}"`);
     }
-
-    if (!localeFiles[locale][namespace]) {
-      localeFiles[locale][namespace] = [];
-    }
-
-    localeFiles[locale][namespace].push({
-      path: filePath,
-      relativePath,
-    });
   }
 
   return localeFiles;
@@ -97,6 +130,8 @@ async function findLocaleFiles(localesPaths, fileExtensions) {
  * @returns {string} 语言标识符
  */
 function determineLocale(filePath) {
+  console.log(`  尝试从路径确定语言: "${filePath}"`);
+
   // 标准化路径用于正则匹配
   const normalizedPath = filePath.replace(/\\/g, "/");
 
@@ -111,12 +146,14 @@ function determineLocale(filePath) {
   for (const pattern of localePatterns) {
     const match = normalizedPath.match(pattern);
     if (match && match[1]) {
+      console.log(`    匹配规则: ${pattern} => 结果: ${match[1]}`);
       return match[1].toLowerCase();
     }
   }
 
   // 如果无法确定，使用文件名作为标识
   const fileName = path.basename(normalizedPath, path.extname(normalizedPath));
+  console.log(`    未匹配任何规则，使用文件名: ${fileName}`);
   return fileName;
 }
 
@@ -145,12 +182,33 @@ function determineNamespace(filePath) {
  * @returns {Promise<Object>} 多语言数据
  */
 async function loadLocaleData(localeFiles) {
+  console.log("========== 开始加载多语言数据 ==========");
+  const loadStartTime = Date.now();
+
   const localeData = {};
+
+  // 计算文件总数，用于进度报告
+  let totalFiles = 0;
+  let processedFiles = 0;
+  let successfulFiles = 0;
+  let failedFiles = 0;
+
+  // 统计文件总数
+  for (const locale in localeFiles) {
+    for (const namespace in localeFiles[locale]) {
+      totalFiles += localeFiles[locale][namespace].length;
+    }
+  }
+
+  console.log(`开始加载 ${totalFiles} 个多语言文件`);
 
   for (const locale in localeFiles) {
     localeData[locale] = {};
+    console.log(`\n处理语言: "${locale}"`);
 
     for (const namespace in localeFiles[locale]) {
+      console.log(`  处理命名空间: "${namespace}"`);
+
       // 初始化命名空间
       localeData[locale][namespace] = {};
 
@@ -160,76 +218,203 @@ async function loadLocaleData(localeFiles) {
       // 加载该命名空间下的所有文件
       for (const file of localeFiles[locale][namespace]) {
         try {
-          const content = await fs.readFile(file.path, "utf-8");
-          console.log(`加载多语言文件: ${file.relativePath}`);
+          processedFiles++;
+          const fileStartTime = Date.now();
+
+          console.log(
+            `  [${processedFiles}/${totalFiles}] 加载文件: "${file}"`
+          );
+
+          // 确保文件存在
+          try {
+            await fs.access(file);
+            console.log(`    文件可访问: "${file}"`);
+          } catch (e) {
+            console.warn(`    文件不存在或无法访问: "${file}"`, e);
+            failedFiles++;
+            continue;
+          }
+
+          const content = await fs.readFile(file, "utf-8");
+          console.log(`    已读取文件, 大小: ${content.length} 字符`);
 
           // 根据文件扩展名处理内容
-          const ext = path.extname(file.path).toLowerCase();
+          const ext = path.extname(file).toLowerCase();
+          console.log(`    文件类型: ${ext}`);
+
           let data = {};
 
           if (ext === ".json") {
-            data = JSON.parse(content);
-            console.log(`解析JSON文件: ${file.relativePath}`, data);
+            try {
+              console.log(`    解析JSON...`);
+              data = JSON.parse(content);
+              console.log(`    JSON解析成功`);
+              successfulFiles++;
+            } catch (e) {
+              console.error(`    JSON解析错误: "${file}"`, e);
+              console.log(
+                `    错误位置附近内容: ${content.substring(
+                  Math.max(0, e.pos - 20),
+                  Math.min(content.length, e.pos + 20)
+                )}`
+              );
+              failedFiles++;
+              continue; // 跳过此文件
+            }
           } else if (ext === ".js" || ext === ".ts") {
-            // 优化JS/TS文件内容提取，支持export default格式
-            const exportPattern = /export\s+default\s+({[\s\S]+?});?\s*$/;
-            const constPattern = /const\s+\w+\s*=\s*({[\s\S]+?});?\s*$/;
+            try {
+              console.log(`    解析JS/TS...`);
 
-            // 尝试匹配export default格式
-            let matches = content.match(exportPattern);
+              // 优化JS/TS文件内容提取，支持多种导出格式
+              // 移除注释，减少干扰
+              const cleanContent = content
+                .replace(/\/\/.*$/gm, "") // 移除行注释
+                .replace(/\/\*[\s\S]*?\*\//g, ""); // 移除块注释
 
-            // 如果没找到，尝试匹配const变量声明格式
-            if (!matches) {
-              matches = content.match(constPattern);
-            }
+              console.log(`    清理后内容长度: ${cleanContent.length} 字符`);
 
-            if (matches && matches[1]) {
-              try {
-                // 使用eval，因为JSON.parse不能处理JS对象字面量
-                // 注意：这在生产环境中可能存在安全风险
-                const objStr = matches[1]
-                  .replace(/\/\/.*$/gm, "")
-                  .replace(/\/\*[\s\S]*?\*\//g, "");
-                data = eval(`(${objStr})`);
-                console.log(`解析JS/TS文件: ${file.relativePath}`, data);
-              } catch (e) {
-                console.error(`无法解析文件内容: ${file.relativePath}`, e);
+              // 尝试多种可能的导出模式
+              const patterns = [
+                // export default {...}
+                /export\s+default\s+({[\s\S]+?})[;\s]*(?:$|\/\/|\/\*)/,
+                // module.exports = {...}
+                /module\.exports\s*=\s*({[\s\S]+?})[;\s]*(?:$|\/\/|\/\*)/,
+                // const xxx = {...}; export default xxx
+                /const\s+\w+\s*=\s*({[\s\S]+?})[;\s]*(?:$|\/\/|\/\*)/,
+                // export {...}
+                /export\s+({[\s\S]+?})[;\s]*(?:$|\/\/|\/\*)/,
+              ];
+
+              console.log(`    尝试 ${patterns.length} 种导出模式...`);
+              let objectStr = null;
+
+              // 尝试每种模式
+              for (const pattern of patterns) {
+                const matches = cleanContent.match(pattern);
+                if (matches && matches[1]) {
+                  objectStr = matches[1];
+                  console.log(`    匹配成功: ${pattern}`);
+                  break;
+                }
               }
+
+              // 如果找到了对象字符串
+              if (objectStr) {
+                console.log(
+                  `    找到对象字符串，长度: ${objectStr.length} 字符`
+                );
+                try {
+                  // 安全地解析字符串为对象（使用Function构造函数代替eval）
+                  console.log(`    使用Function解析...`);
+                  data = Function(`"use strict"; return (${objectStr})`)();
+                  console.log(`    解析成功`);
+                  successfulFiles++;
+                } catch (e) {
+                  console.error(`    解析JS/TS对象失败: "${file}"`, e);
+
+                  // 尝试使用JSON.parse作为后备方案
+                  console.log(`    尝试备用解析方法...`);
+                  try {
+                    // 尝试将对象转换为JSON格式再解析
+                    objectStr = objectStr
+                      .replace(/(['"])?([a-zA-Z0-9_]+)(['"])?:/g, '"$2":') // 确保键名有引号
+                      .replace(/'/g, '"'); // 将单引号替换为双引号
+                    console.log(
+                      `    处理后的对象字符串: 前20字符 ${objectStr.substring(
+                        0,
+                        20
+                      )}...`
+                    );
+                    data = JSON.parse(objectStr);
+                    console.log(`    备用方法解析成功`);
+                    successfulFiles++;
+                  } catch (jsonError) {
+                    console.error(
+                      `    备用解析方法也失败: "${file}"`,
+                      jsonError
+                    );
+                    console.log(
+                      `    错误位置附近内容: ${objectStr.substring(0, 100)}...`
+                    );
+                    failedFiles++;
+                    continue; // 跳过此文件
+                  }
+                }
+              } else {
+                console.warn(`    未找到有效导出对象: "${file}"`);
+                console.log(
+                  `    文件内容摘要: ${cleanContent.substring(0, 100)}...`
+                );
+                failedFiles++;
+                continue; // 跳过此文件
+              }
+            } catch (e) {
+              console.error(`    处理JS/TS文件出错: "${file}"`, e);
+              console.error(`    错误堆栈:`, e.stack);
+              failedFiles++;
+              continue; // 跳过此文件
             }
+          } else {
+            console.warn(`    不支持的文件类型: ${ext}, 文件: "${file}"`);
+            failedFiles++;
+            continue; // 跳过此文件
           }
 
-          // 合并原始嵌套对象
+          // 输出解析结果
+          const keyCount = Object.keys(data).length;
+          console.log(`    解析得到 ${keyCount} 个顶级键`);
+          if (keyCount > 0) {
+            console.log(
+              `    顶级键: ${Object.keys(data).slice(0, 5).join(", ")}${
+                keyCount > 5 ? "..." : ""
+              }`
+            );
+          }
+
+          // 深度合并数据
+          console.log(`    合并数据...`);
           originalData = deepMerge(originalData, data);
 
-          // 合并扁平化数据到命名空间
-          const flattenedData = flattenObject(data);
+          const fileEndTime = Date.now();
           console.log(
-            `加载文件 ${file.relativePath} 的扁平化数据:`,
-            flattenedData
+            `    文件处理完成，耗时: ${fileEndTime - fileStartTime}ms`
           );
-
-          // 合并数据到命名空间
-          localeData[locale][namespace] = {
-            ...localeData[locale][namespace],
-            ...flattenedData,
-          };
         } catch (error) {
-          console.error(`加载文件失败: ${file.relativePath}`, error);
+          console.error(`    加载文件失败: "${file}"`, error);
+          console.error(`    错误堆栈:`, error.stack);
+          failedFiles++;
         }
       }
 
-      // 将原始嵌套对象也添加到命名空间中
-      localeData[locale][namespace] = {
-        ...localeData[locale][namespace],
-        ...originalData,
-      };
-
-      console.log(
-        `${locale}.${namespace} 命名空间加载完成`,
+      // 将嵌套对象保存到扁平对象中
+      localeData[locale][namespace] = flattenObject(originalData);
+      const flattenedKeysCount = Object.keys(
         localeData[locale][namespace]
-      );
+      ).length;
     }
   }
+
+  // 报告结果
+  const localeCount = Object.keys(localeData).length;
+  let totalKeys = 0;
+  for (const locale in localeData) {
+    for (const namespace in localeData[locale]) {
+      totalKeys += Object.keys(localeData[locale][namespace]).length;
+    }
+  }
+
+  const loadEndTime = Date.now();
+  const loadDuration = loadEndTime - loadStartTime;
+
+  console.log("\n多语言数据加载统计:");
+  console.log(`  语言数: ${localeCount}`);
+  console.log(`  翻译键总数: ${totalKeys}`);
+  console.log(`  处理文件总数: ${totalFiles}`);
+  console.log(`  成功处理: ${successfulFiles}`);
+  console.log(`  处理失败: ${failedFiles}`);
+  console.log(`  总耗时: ${loadDuration}ms`);
+
+  console.log("========== 多语言数据加载完成 ==========\n");
 
   return localeData;
 }
@@ -320,7 +505,6 @@ function flattenObject(obj, prefix = "") {
   }
 
   // 返回扁平化后的对象
-  console.log("扁平化结果:", result);
   return result;
 }
 
@@ -373,14 +557,12 @@ async function saveTranslation(key, translations, localeFiles) {
       continue;
     }
 
-    console.log(
-      `选择文件保存 ${locale} 语言的 ${key}: ${fileInfo.relativePath}`
-    );
+    console.log(`选择文件保存 ${locale} 语言的 ${key}: ${fileInfo}`);
 
     try {
       // 读取文件内容
-      const content = await fs.readFile(fileInfo.path, "utf-8");
-      const ext = path.extname(fileInfo.path).toLowerCase();
+      const content = await fs.readFile(fileInfo, "utf-8");
+      const ext = path.extname(fileInfo).toLowerCase();
 
       // 确定键路径
       // 如果第一部分是命名空间，则去掉；否则使用完整路径
@@ -394,12 +576,8 @@ async function saveTranslation(key, translations, localeFiles) {
         setNestedValue(data, keyParts, translations[locale]);
 
         // 保存文件
-        await fs.writeFile(
-          fileInfo.path,
-          JSON.stringify(data, null, 2),
-          "utf-8"
-        );
-        console.log(`已保存翻译到JSON文件: ${fileInfo.relativePath}`);
+        await fs.writeFile(fileInfo, JSON.stringify(data, null, 2), "utf-8");
+        console.log(`已保存翻译到JSON文件: ${fileInfo}`);
       } else if (ext === ".js" || ext === ".ts") {
         // 处理JS/TS文件 - 支持export default格式
         const exportPattern = /export\s+default\s+({[\s\S]+?});?\s*$/;
@@ -423,19 +601,17 @@ async function saveTranslation(key, translations, localeFiles) {
             );
 
             // 保存文件
-            await fs.writeFile(fileInfo.path, newContent, "utf-8");
-            console.log(`已保存翻译到JS/TS文件: ${fileInfo.relativePath}`);
+            await fs.writeFile(fileInfo, newContent, "utf-8");
+            console.log(`已保存翻译到JS/TS文件: ${fileInfo}`);
           } catch (e) {
-            console.error(`无法更新文件: ${fileInfo.relativePath}`, e);
+            console.error(`无法更新文件: ${fileInfo}`, e);
           }
         } else {
-          console.error(
-            `文件格式不支持: ${fileInfo.relativePath} - 未找到export default`
-          );
+          console.error(`文件格式不支持: ${fileInfo} - 未找到export default`);
         }
       }
     } catch (error) {
-      console.error(`保存翻译失败: ${fileInfo.relativePath}`, error);
+      console.error(`保存翻译失败: ${fileInfo}`, error);
     }
   }
 }
@@ -490,4 +666,5 @@ module.exports = {
   findLocaleFiles,
   loadLocaleData,
   saveTranslation,
+  flattenObject,
 };

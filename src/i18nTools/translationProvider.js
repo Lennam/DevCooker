@@ -1,7 +1,6 @@
 const vscode = require("vscode");
 const acorn = require("acorn");
 const walk = require("acorn-walk");
-const _ = require("lodash");
 
 // 添加翻译缓存，避免重复查询相同的键
 const translationCache = new Map();
@@ -24,13 +23,26 @@ function logError(...args) {
 }
 
 /**
+ * 检查对象是否为空
+ * @param {Object} obj 要检查的对象
+ * @returns {boolean} 对象是否为空
+ */
+function isEmpty(obj) {
+  return (
+    obj === null ||
+    obj === undefined ||
+    (typeof obj === "object" && Object.keys(obj).length === 0)
+  );
+}
+
+/**
  * 装饰编辑器中的多语言键
  * @param {vscode.TextEditor} editor 文本编辑器
  * @param {vscode.TextEditorDecorationType} decorator 装饰器类型
  * @param {Object} localeData 多语言数据
  */
 function decorateI18nKeys(editor, decorator, localeData) {
-  if (!editor || !decorator || _.isEmpty(localeData)) {
+  if (!editor || !decorator || isEmpty(localeData)) {
     return;
   }
 
@@ -82,8 +94,12 @@ function decorateI18nKeys(editor, decorator, localeData) {
 
   // 应用装饰器
   editor.setDecorations(decorator, decorations);
-  
-  logDebug(`装饰完成，共处理 ${decorations.length} 个翻译键，耗时 ${Date.now() - startTime}ms`);
+
+  logDebug(
+    `装饰完成，共处理 ${decorations.length} 个翻译键，耗时 ${
+      Date.now() - startTime
+    }ms`
+  );
 }
 
 /**

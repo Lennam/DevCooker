@@ -3,20 +3,25 @@ const fs = require("fs");
 const path = require("path");
 const axios = require("axios");
 
-const {
-  extractUrlFromInput,
-  ensureDirectoryExists,
-  getFullPath,
-  showMessage,
-  getHttpHeaders,
-  ensureValidFilePath,
-} = require("./utils");
-const {
-  extractFontUrls,
-  extractIconDefinitions,
-  downloadFonts,
-} = require("./iconParser");
-const { generateScssFromCss } = require("./scssGenerator");
+// 懒加载辅助模块
+let utils = null;
+let iconParser = null;
+let scssGenerator = null;
+
+/**
+ * 延迟加载模块
+ */
+function lazyLoadModules() {
+  if (!utils) {
+    utils = require("./utils");
+  }
+  if (!iconParser) {
+    iconParser = require("./iconParser");
+  }
+  if (!scssGenerator) {
+    scssGenerator = require("./scssGenerator");
+  }
+}
 
 /**
  * 获取插件配置
@@ -48,6 +53,8 @@ function getConfig() {
  * @returns {Promise<string|null>} 用户输入的URL或null
  */
 async function getUserInput() {
+  lazyLoadModules();
+  
   const userInput = await vscode.window.showInputBox({
     prompt: "请输入Icomoon样式文件URL或<link>标签",
     placeHolder: 'https://i.icomoon.io/public/xxx/xxx.css 或 <link href="...">',
@@ -67,10 +74,10 @@ async function getUserInput() {
 
   if (!userInput) return null;
 
-  const icomoonUrl = extractUrlFromInput(userInput);
+  const icomoonUrl = utils.extractUrlFromInput(userInput);
 
   if (!icomoonUrl) {
-    showMessage("无法解析有效的URL", "error");
+    utils.showMessage("无法解析有效的URL", "error");
     return null;
   }
 
@@ -83,9 +90,11 @@ async function getUserInput() {
  * @returns {Promise<string|null>} CSS内容或null
  */
 async function downloadCssContent(url) {
+  lazyLoadModules();
+  
   try {
     const cssResponse = await axios.get(url, {
-      headers: getHttpHeaders(),
+      headers: utils.getHttpHeaders(),
     });
     const cssContent = cssResponse.data;
 
@@ -95,7 +104,7 @@ async function downloadCssContent(url) {
 
     return cssContent;
   } catch (error) {
-    showMessage(`下载CSS文件失败: ${error.message}`, "error");
+    utils.showMessage(`下载CSS文件失败: ${error.message}`, "error");
     console.error(error);
     return null;
   }
@@ -108,18 +117,20 @@ async function downloadCssContent(url) {
  * @returns {Promise<boolean>} 是否保存成功
  */
 async function saveScssFile(scssContent, stylesPath) {
+  lazyLoadModules();
+  
   try {
     // 获取完整路径
-    const fullStylesPath = getFullPath(stylesPath);
+    const fullStylesPath = utils.getFullPath(stylesPath);
 
     // 确保目录存在
-    await ensureDirectoryExists(path.dirname(fullStylesPath));
+    await utils.ensureDirectoryExists(path.dirname(fullStylesPath));
 
     // 写入文件内容
     await fs.promises.writeFile(fullStylesPath, scssContent);
     return true;
   } catch (error) {
-    showMessage(`保存SCSS文件失败: ${error.message}`, "error");
+    utils.showMessage(`保存SCSS文件失败: ${error.message}`, "error");
     console.error(error);
     return false;
   }
@@ -130,6 +141,9 @@ async function saveScssFile(scssContent, stylesPath) {
  */
 async function processIcomoonAssets() {
   try {
+    // 懒加载所有模块
+    lazyLoadModules();
+    
     // 获取配置
     const { fontFilesPath, stylesPath } = getConfig();
 
@@ -152,43 +166,44 @@ async function processIcomoonAssets() {
 
         // 步骤2: 提取并下载字体
         progress.report({ message: "下载字体文件中...", increment: 30 });
-        const fontUrls = extractFontUrls(cssContent);
+        const fontUrls = iconParser.extractFontUrls(cssContent);
 
         if (fontUrls.length === 0) {
-          showMessage(
+          utils.showMessage(
             "未在CSS中找到字体文件引用，请检查CSS内容是否正确",
             "warning"
           );
         }
 
-        await downloadFonts(fontUrls, fontFilesPath);
+        await iconParser.downloadFonts(fontUrls, fontFilesPath);
 
         // 步骤3: 解析图标
         progress.report({ message: "解析图标定义...", increment: 20 });
-        const iconDefinitions = extractIconDefinitions(cssContent);
+        const iconDefinitions = iconParser.extractIconDefinitions(cssContent);
 
         if (iconDefinitions.size === 0) {
-          showMessage("未在CSS中找到图标定义，生成的SCSS可能不完整", "warning");
+          utils.showMessage("未在CSS中找到图标定义，生成的SCSS可能不完整", "warning");
         } else {
-          showMessage(`成功解析 ${iconDefinitions.size} 个图标定义`);
+          utils.showMessage(`成功解析 ${iconDefinitions.size} 个图标定义`);
         }
 
         // 步骤4: 生成并保存SCSS
         progress.report({ message: "生成SCSS文件中...", increment: 20 });
-        const newScssContent = await generateScssFromCss(cssContent);
+        const newScssContent = await scssGenerator.generateScssFromCss(cssContent);
         const saveResult = await saveScssFile(newScssContent, stylesPath);
 
         // 完成
         if (saveResult) {
           progress.report({ message: "完成!", increment: 10 });
-          showMessage(
-            `Icomoon资源处理完成！样式文件已保存至: ${getFullPath(stylesPath)}`
+          utils.showMessage(
+            `Icomoon资源处理完成！样式文件已保存至: ${utils.getFullPath(stylesPath)}`
           );
         }
       }
     );
   } catch (error) {
-    showMessage(`处理失败: ${error.message}`, "error");
+    lazyLoadModules();
+    utils.showMessage(`处理失败: ${error.message}`, "error");
     console.error(error);
   }
 }

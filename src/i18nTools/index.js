@@ -9,12 +9,35 @@ let decorator = null; // 文本编辑器装饰器
 let hoverProvider = null; // 悬停提供器
 let statusBarItem = null; // 状态栏项
 let context = null; // 扩展上下文
+let isInitialized = false; // 初始化标记
+let isInitializing = false; // 正在初始化标记
+let editorChangeListener = null; // 编辑器变化监听器
+let documentChangeListener = null; // 文档变化监听器
+
+/**
+ * 检查对象是否为空
+ * @param {Object} obj 要检查的对象
+ * @returns {boolean} 对象是否为空
+ */
+function isEmpty(obj) {
+  return (
+    obj === null ||
+    obj === undefined ||
+    (typeof obj === "object" && Object.keys(obj).length === 0)
+  );
+}
 
 /**
  * 初始化i18n工具
  * @param {vscode.ExtensionContext} _context 扩展上下文
  */
 async function initialize(_context) {
+  // 防止重复初始化
+  if (isInitialized || isInitializing) {
+    return;
+  }
+
+  isInitializing = true;
   context = _context;
 
   // 创建状态栏项
@@ -26,7 +49,7 @@ async function initialize(_context) {
   statusBarItem.tooltip = "刷新多语言数据";
   context.subscriptions.push(statusBarItem);
 
-  // 创建装饰器
+  // 创建装饰器 - 延迟到实际需要时再创建
   decorator = vscode.window.createTextEditorDecorationType({
     after: {
       margin: "0 0 0 10px",
@@ -35,49 +58,58 @@ async function initialize(_context) {
   });
   context.subscriptions.push(decorator);
 
-  // 加载多语言数据
-  await refreshLocales();
-
-  // 注册悬停提供器
-  const supportedLanguages = ["vue", "javascript", "typescript"];
-  hoverProvider = vscode.languages.registerHoverProvider(
-    supportedLanguages,
-    translationProvider.getTranslationHoverProvider(localeData)
-  );
-  context.subscriptions.push(hoverProvider);
-
-  // 监听文本编辑器变化事件
-  vscode.window.onDidChangeActiveTextEditor(
-    (editor) => {
-      if (editor) {
-        decorateActiveEditor();
-      }
-    },
-    null,
-    context.subscriptions
-  );
-
-  // 监听文档变化事件
-  vscode.workspace.onDidChangeTextDocument(
-    (event) => {
-      if (
-        vscode.window.activeTextEditor &&
-        event.document === vscode.window.activeTextEditor.document
-      ) {
-        decorateActiveEditor();
-      }
-    },
-    null,
-    context.subscriptions
-  );
-
-  // 初始化当前打开的编辑器
-  if (vscode.window.activeTextEditor) {
-    decorateActiveEditor();
-  }
-
-  statusBarItem.text = "$(globe) 多语言";
+  // 状态栏显示初始状态
+  statusBarItem.text = "$(sync~spin) 加载多语言...";
   statusBarItem.show();
+
+  // 异步加载多语言数据，不阻塞初始化流程
+  setTimeout(async () => {
+    await refreshLocales();
+
+    // 注册悬停提供器 - 仅在有多语言数据时注册
+    if (!isEmpty(localeData)) {
+      const supportedLanguages = ["vue", "javascript", "typescript"];
+      hoverProvider = vscode.languages.registerHoverProvider(
+        supportedLanguages,
+        translationProvider.getTranslationHoverProvider(localeData)
+      );
+      context.subscriptions.push(hoverProvider);
+    }
+
+    // 监听文本编辑器变化事件
+    editorChangeListener = vscode.window.onDidChangeActiveTextEditor(
+      (editor) => {
+        if (editor) {
+          decorateActiveEditor();
+        }
+      },
+      null,
+      context.subscriptions
+    );
+
+    // 监听文档变化事件
+    documentChangeListener = vscode.workspace.onDidChangeTextDocument(
+      (event) => {
+        if (
+          vscode.window.activeTextEditor &&
+          event.document === vscode.window.activeTextEditor.document
+        ) {
+          decorateActiveEditor();
+        }
+      },
+      null,
+      context.subscriptions
+    );
+
+    // 初始化当前打开的编辑器
+    if (vscode.window.activeTextEditor) {
+      decorateActiveEditor();
+    }
+
+    statusBarItem.text = "$(globe) 多语言";
+    isInitialized = true;
+    isInitializing = false;
+  }, 300);
 }
 
 /**
@@ -87,6 +119,7 @@ function decorateActiveEditor() {
   const editor = vscode.window.activeTextEditor;
   if (
     editor &&
+    !isEmpty(localeData) &&
     (editor.document.languageId === "vue" ||
       editor.document.languageId === "javascript" ||
       editor.document.languageId === "typescript")
@@ -107,7 +140,7 @@ async function configureLocales() {
   const pathsInput = await vscode.window.showInputBox({
     prompt: "输入多语言文件路径 (用逗号分隔多个路径)",
     value: currentPaths.join(", "),
-    placeHolder: "例如: src/locales, src/i18n, src\\locales",
+    placeHolder: "例如: src/locales, src/i18n, locales",
   });
 
   if (pathsInput !== undefined) {
@@ -117,15 +150,36 @@ async function configureLocales() {
       .map((p) => p.trim())
       .filter((p) => p);
 
+    // 验证路径格式
+    const validPaths = [];
+    const invalidPaths = [];
+
+    for (const p of paths) {
+      try {
+        // 简单验证路径，去除非法字符
+        const sanitizedPath = p.replace(/[<>:"\\|?*]/g, "");
+        if (sanitizedPath !== p) {
+          invalidPaths.push(p);
+          continue;
+        }
+        validPaths.push(p);
+      } catch (error) {
+        invalidPaths.push(p);
+      }
+    }
+
+    if (invalidPaths.length > 0) {
+      vscode.window.showWarningMessage(
+        `以下路径格式不正确，将被忽略: ${invalidPaths.join(", ")}`
+      );
+    }
+
     // 更新配置
     await config.update(
       "i18n.localesPaths",
-      paths,
+      validPaths,
       vscode.ConfigurationTarget.Workspace
     );
-
-    // 显示日志
-    console.log("已配置的多语言路径:", paths);
 
     // 刷新多语言数据
     await refreshLocales();
@@ -137,7 +191,9 @@ async function configureLocales() {
  */
 async function refreshLocales() {
   try {
-    statusBarItem.text = "$(sync~spin) 刷新多语言...";
+    if (statusBarItem) {
+      statusBarItem.text = "$(sync~spin) 刷新多语言...";
+    }
 
     // 获取配置
     const config = vscode.workspace.getConfiguration("devCooker");
@@ -150,44 +206,42 @@ async function refreshLocales() {
 
     if (paths.length === 0) {
       vscode.window.showInformationMessage("请先配置多语言文件路径。");
-      statusBarItem.text = "$(alert) 未配置多语言";
+      if (statusBarItem) {
+        statusBarItem.text = "$(alert) 未配置多语言";
+      }
       return;
     }
 
+    // 标准化文件扩展名
+    const normalizedExtensions = fileExtensions.map((ext) =>
+      ext.startsWith(".") ? ext : `.${ext}`
+    );
+
     // 查找多语言文件
-    localeFiles = await localeManager.findLocaleFiles(paths, fileExtensions);
+    localeFiles = await localeManager.findLocaleFiles(
+      paths,
+      normalizedExtensions
+    );
 
     // 加载多语言数据
     localeData = await localeManager.loadLocaleData(localeFiles);
-    console.log("多语言数据:", localeData);
 
-    // 计算语言数量和多语言键总数
-    const localeCount = Object.keys(localeData).length;
-
-    // 统计所有扁平化键的数量
-    let allKeys = new Set();
-    for (const locale in localeData) {
-      for (const namespace in localeData[locale]) {
-        // 获取该命名空间下的所有键
-        const keys = Object.keys(localeData[locale][namespace]);
-        keys.forEach((key) => allKeys.add(key));
-      }
+    // 更新装饰器
+    if (vscode.window.activeTextEditor && decorator) {
+      decorateActiveEditor();
     }
-    const keyCount = allKeys.size;
 
-    statusBarItem.text = `$(globe) ${localeCount}种语言`;
-    statusBarItem.tooltip = `多语言数据: ${localeCount}种语言, ${keyCount}个翻译键`;
-
-    // 更新当前编辑器的装饰
-    decorateActiveEditor();
-
-    vscode.window.showInformationMessage(
-      `已加载${localeCount}种语言，共${keyCount}个翻译键`
-    );
+    if (statusBarItem) {
+      const localeCount = Object.keys(localeData).length;
+      statusBarItem.text = `$(globe) ${
+        localeCount > 0 ? localeCount + "种语言" : "多语言"
+      }`;
+    }
   } catch (error) {
     vscode.window.showErrorMessage(`刷新多语言数据失败: ${error.message}`);
-    statusBarItem.text = "$(error) 多语言加载错误";
-    statusBarItem.tooltip = `错误: ${error.message}`;
+    if (statusBarItem) {
+      statusBarItem.text = "$(error) 多语言加载失败";
+    }
   }
 }
 
@@ -298,20 +352,30 @@ async function editTranslation(key) {
 }
 
 /**
- * 清理资源
+ * 释放资源
  */
 function dispose() {
   if (statusBarItem) {
     statusBarItem.dispose();
   }
-
   if (decorator) {
     decorator.dispose();
   }
-
   if (hoverProvider) {
     hoverProvider.dispose();
   }
+  if (editorChangeListener) {
+    editorChangeListener.dispose();
+  }
+  if (documentChangeListener) {
+    documentChangeListener.dispose();
+  }
+
+  // 清空数据
+  localeData = {};
+  localeFiles = {};
+  context = null;
+  isInitialized = false;
 }
 
 module.exports = {

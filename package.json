@@ -19,9 +19,9 @@
   "main": "./src/extension.js",
   "activationEvents": [
     "onCommand:devassistkit.iconProcessor",
-    "onLanguage:vue",
-    "onLanguage:javascript",
-    "onLanguage:typescript"
+    "onCommand:devassistkit.i18nTools.configureLocales",
+    "onCommand:devassistkit.i18nTools.refreshLocales",
+    "onCommand:devassistkit.i18nTools.editTranslation"
   ],
   "contributes": {
     "commands": [
@@ -109,7 +109,6 @@
     "acorn": "^8.14.1",
     "acorn-walk": "^8.3.4",
     "axios": "^1.8.1",
-    "glob": "^10.4.5",
-    "lodash": "^4.17.21"
+    "fast-glob": "^3.3.3"
   }
 }
